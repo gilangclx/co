@@ -233,7 +233,7 @@ def cancel(update: Update, context: CallbackContext):
 
 # Fungsi utama untuk bot
 def main():
-    application = Application.builder().token("7687786246:AAFe5BiJUqYKgysCcSo8wf7x_sWGTEJ9m9Q").build()
+    application = Application.builder().token("7306369889:AAGOaMMNS5nQ_2_hBlZV7ntLjI3pdcrzQ_0").build()
 
     conversation_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_checkout)],
