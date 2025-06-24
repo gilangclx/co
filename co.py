@@ -1,13 +1,12 @@
 import asyncio
 import httpx
 import datetime
-import multiprocessing
 import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, ConversationHandler
 
 # Define conversation states
-TIME_INPUT, PRODUCT_ID_INPUT, COOKIE_INPUT, FINALIZE_CHECKOUT = range(4)  # Mendefinisikan status percakapan
+TIME_INPUT, PRODUCT_ID_INPUT, COOKIE_INPUT, FINALIZE_CHECKOUT = range(4)
 
 # URL dan template header untuk request
 url = "https://imgs-ac.alipay.com/imgw.htm"
@@ -86,8 +85,7 @@ PRODUCT_IDS = {
 }
 
 # Fungsi checkout untuk tiap task
-def checkout_task(cookie, product_id, product_name, target_time_str, cookie_idx, success_counter):
-    # Ini akan dijalankan di setiap proses paralel
+async def checkout_task(cookie, product_id, product_name, target_time_str, cookie_idx, success_counter):
     headers = headers_template.copy()
     full_cookie = f"{cookie}"
     headers["cookie"] = full_cookie
@@ -96,41 +94,39 @@ def checkout_task(cookie, product_id, product_name, target_time_str, cookie_idx,
     updated_payload = payload.copy()
     updated_payload["requestData"] = updated_payload["requestData"].replace("2022061810802909623", product_id)
 
-    async def process_checkout():
-        async with httpx.AsyncClient(http2=True) as client:
-            max_retry = 90  # Jumlah maksimal retry
-            for retry in range(max_retry):
-                try:
-                    response = await client.post(url, headers=headers, data=updated_payload)
-                    res_json = response.json()
+    async with httpx.AsyncClient(http2=True) as client:
+        max_retry = 90  # Jumlah maksimal retry
+        for retry in range(max_retry):
+            try:
+                response = await client.post(url, headers=headers, data=updated_payload)
+                res_json = response.json()
 
-                    # Dapatkan waktu saat ini
-                    current_time = datetime.datetime.now().strftime("%H:%M:%S")
+                # Dapatkan waktu saat ini
+                current_time = datetime.datetime.now().strftime("%H:%M:%S")
 
-                    # === Cek Berhasil ===
-                    if res_json.get("result", {}).get("success") is True:
-                        order_id = res_json.get("result", {}).get("orderId", "Tidak Ada Order ID")
-                        success_counter[0] += 1  # Increment counter jika checkout berhasil
-                        print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Berhasil checkout pada percobaan ke-{retry + 1}! ORDER ID: {order_id}")
-                        break
+                # === Cek Berhasil ===
+                if res_json.get("result", {}).get("success") is True:
+                    order_id = res_json.get("result", {}).get("orderId", "Tidak Ada Order ID")
+                    success_counter[0] += 1  # Increment counter jika checkout berhasil
+                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Berhasil checkout pada percobaan ke-{retry + 1}! ORDER ID: {order_id}")
+                    break
 
-                    # === Cek Produk habis atau limit pembelian ===
-                    error_code = res_json.get("result", {}).get("errorCode")
-                    if error_code in ["AE15115999000006", "AE15115999000011", "AE15115999000026"]:
-                        error_msg = res_json["result"].get("errorMessage", "Tidak diketahui")
-                        print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Gagal checkout pada percobaan ke-{retry + 1}! Error: {error_msg}")
-                        break
+                # === Cek Produk habis atau limit pembelian ===
+                error_code = res_json.get("result", {}).get("errorCode")
+                if error_code in ["AE15115999000006", "AE15115999000011", "AE15115999000026"]:
+                    error_msg = res_json["result"].get("errorMessage", "Tidak diketahui")
+                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Gagal checkout pada percobaan ke-{retry + 1}! Error: {error_msg}")
+                    break
 
-                    # === Cek Login timeout ===
-                    if res_json.get("resultStatus") == 2000 and res_json.get("memo") == "Login timeout!":
-                        print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Login timeout pada percobaan ke-{retry + 1}! Harap login ulang.")
-                        break
+                # === Cek Login timeout ===
+                if res_json.get("resultStatus") == 2000 and res_json.get("memo") == "Login timeout!":
+                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Login timeout pada percobaan ke-{retry + 1}! Harap login ulang.")
+                    break
 
-                except Exception as e:
-                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Error saat mencoba checkout: {e}")
+            except Exception as e:
+                print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Error saat mencoba checkout: {e}")
 
-                # Tunggu beberapa detik sebelum mencoba lagi
-                time.sleep(0)  # Tunggu 0 detik antar percakapan (bisa disesuaikan)
+            await asyncio.sleep(1)  # Tunggu 1 detik antar percakapan
 
     # Tunggu hingga waktu checkout tercapai
     target_time = datetime.datetime.strptime(target_time_str, "%H:%M:%S").time()
@@ -138,23 +134,24 @@ def checkout_task(cookie, product_id, product_name, target_time_str, cookie_idx,
 
     while now < target_time:
         now = datetime.datetime.now().time()  # Update current time
-        time.sleep(0.1)  # Tunggu sampai waktu yang diinginkan
+        await asyncio.sleep(0.1)  # Tunggu sampai waktu yang diinginkan
 
-    asyncio.run(process_checkout())  # Jalankan proses checkout setelah waktu tercapai
+    # Jalankan proses checkout setelah waktu tercapai
+    await process_checkout()
 
-# Fungsi untuk menjalankan semua task secara paralel
-def process_all_checkout(cookies, product_ids, product_names, target_time_str):
-    processes = []
+# Fungsi untuk menjalankan semua task secara paralel menggunakan asyncio
+async def process_all_checkout(cookies, product_ids, product_names, target_time_str):
+    tasks = []
     success_counter = [0]  # Counter untuk melacak jumlah checkout yang berhasil
 
     for idx, product_id in enumerate(product_ids):
         for cookie_idx, cookie in enumerate(cookies, 1):  # Mulai dari 1 untuk indeks cookie
-            p = multiprocessing.Process(target=checkout_task, args=(cookie, product_id, product_names[idx], target_time_str, cookie_idx, success_counter))
-            processes.append(p)
-            p.start()
+            # Menambahkan task checkout ke dalam list tasks
+            task = asyncio.create_task(checkout_task(cookie, product_id, product_names[idx], target_time_str, cookie_idx, success_counter))
+            tasks.append(task)
 
-    for p in processes:
-        p.join()  # Tunggu sampai semua proses selesai
+    # Menunggu semua task selesai
+    await asyncio.gather(*tasks)
 
     return success_counter[0]  # Kembalikan jumlah checkout yang berhasil
 
@@ -216,8 +213,8 @@ async def finalize_checkout(update: Update, context: CallbackContext):
         products = context.user_data["products"]
         product_names = [name for name in PRODUCT_IDS.keys()]
 
-        # Jalankan semua task checkout secara paralel menggunakan multiprocessing
-        success_count = process_all_checkout(cookies, products, product_names, context.user_data["target_time"])
+        # Jalankan semua task checkout secara paralel menggunakan asyncio
+        success_count = await process_all_checkout(cookies, products, product_names, context.user_data["target_time"])
 
         # Kirim pesan sukses dengan jumlah checkout yang berhasil
         await update.message.reply_text(f"Proses checkout selesai! Berhasil: {success_count} checkout(s)!")
@@ -243,7 +240,7 @@ def main():
             COOKIE_INPUT: [MessageHandler(filters.TEXT, cookie_input)],
             FINALIZE_CHECKOUT: [MessageHandler(filters.TEXT, finalize_checkout)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],  # Menghapus perintah /close
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     application.add_handler(conversation_handler)
