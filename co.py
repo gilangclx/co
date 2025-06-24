@@ -249,5 +249,5 @@ def main():
     application.add_handler(conversation_handler)
     application.run_polling()
 
-if _name_ == "_main_":
+if __main__ == "__main__":
     main()
