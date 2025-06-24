@@ -1,9 +1,12 @@
 import asyncio
 import httpx
 import datetime
-import time
+import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, ConversationHandler
+
+# Setup logging (log to a file)
+logging.basicConfig(filename='bot_log.txt', level=logging.INFO)
 
 # Define conversation states
 TIME_INPUT, PRODUCT_ID_INPUT, COOKIE_INPUT, FINALIZE_CHECKOUT = range(4)
@@ -94,46 +97,52 @@ async def checkout_task(cookie, product_id, product_name, target_time_str, cooki
     updated_payload = payload.copy()
     updated_payload["requestData"] = updated_payload["requestData"].replace("2022061810802909623", product_id)
 
-    async with httpx.AsyncClient(http2=True) as client:
-        max_retry = 90  # Jumlah maksimal retry
-        for retry in range(max_retry):
-            try:
-                response = await client.post(url, headers=headers, data=updated_payload)
-                res_json = response.json()
+    try:
+        async with httpx.AsyncClient(http2=True, timeout=httpx.Timeout(10.0)) as client:  # Set a timeout (10 seconds)
+            max_retry = 90  # Jumlah maksimal retry
+            for retry in range(max_retry):
+                try:
+                    response = await client.post(url, headers=headers, data=updated_payload)
+                    res_json = response.json()
 
-                # Dapatkan waktu saat ini
-                current_time = datetime.datetime.now().strftime("%H:%M:%S")
+                    # Dapatkan waktu saat ini
+                    current_time = datetime.datetime.now().strftime("%H:%M:%S")
 
-                # === Cek Berhasil ===
-                if res_json.get("result", {}).get("success") is True:
-                    order_id = res_json.get("result", {}).get("orderId", "Tidak Ada Order ID")
-                    success_counter[0] += 1  # Increment counter jika checkout berhasil
-                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Berhasil checkout pada percobaan ke-{retry + 1}! ORDER ID: {order_id}")
-                    break
+                    # === Cek Berhasil ===
+                    if res_json.get("result", {}).get("success") is True:
+                        order_id = res_json.get("result", {}).get("orderId", "Tidak Ada Order ID")
+                        success_counter[0] += 1
+                        # Gantilah print dengan logging atau tidak mencetak sama sekali
+                        logging.info(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Berhasil checkout pada percobaan ke-{retry + 1}! ORDER ID: {order_id}")
+                        break
 
-                # === Cek Produk habis atau limit pembelian ===
-                error_code = res_json.get("result", {}).get("errorCode")
-                if error_code in ["AE15115999000006", "AE15115999000011", "AE15115999000026"]:
-                    error_msg = res_json["result"].get("errorMessage", "Tidak diketahui")
-                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Gagal checkout pada percobaan ke-{retry + 1}! Error: {error_msg}")
-                    break
+                    # === Cek Produk habis atau limit pembelian ===
+                    error_code = res_json.get("result", {}).get("errorCode")
+                    if error_code in ["AE15115999000006", "AE15115999000011", "AE15115999000026"]:
+                        error_msg = res_json["result"].get("errorMessage", "Tidak diketahui")
+                        logging.info(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Gagal checkout pada percobaan ke-{retry + 1}! Error: {error_msg}")
+                        break
 
-                # === Cek Login timeout ===
-                if res_json.get("resultStatus") == 2000 and res_json.get("memo") == "Login timeout!":
-                    print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Login timeout pada percobaan ke-{retry + 1}! Harap login ulang.")
-                    break
+                    # === Cek Login timeout ===
+                    if res_json.get("resultStatus") == 2000 and res_json.get("memo") == "Login timeout!":
+                        logging.info(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Login timeout pada percobaan ke-{retry + 1}! Harap login ulang.")
+                        break
 
-            except Exception as e:
-                print(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Error saat mencoba checkout: {e}")
+                except Exception as e:
+                    logging.error(f"[{current_time}][{product_name}][{product_id}] [Cookie ke-{cookie_idx}] Error saat mencoba checkout: {e}")
 
-            await asyncio.sleep(1)  # Tunggu 1 detik antar percakapan
+                await asyncio.sleep(1)  # Tunggu 1 detik antar percakapan
+    except asyncio.TimeoutError:
+        logging.error(f"[{current_time}][{product_name}][{product_id}] Timeout saat mencoba melakukan checkout!")
+    except Exception as e:
+        logging.error(f"[{current_time}][{product_name}][{product_id}] Error tak terduga: {e}")
 
     # Tunggu hingga waktu checkout tercapai
     target_time = datetime.datetime.strptime(target_time_str, "%H:%M:%S").time()
     now = datetime.datetime.now().time()
 
     while now < target_time:
-        now = datetime.datetime.now().time()  # Update current time
+        now = datetime.datetime.now().time()
         await asyncio.sleep(0.1)  # Tunggu sampai waktu yang diinginkan
 
     # Jalankan proses checkout setelah waktu tercapai
@@ -230,7 +239,7 @@ def cancel(update: Update, context: CallbackContext):
 
 # Fungsi utama untuk bot
 def main():
-    application = Application.builder().token("7306369889:AAGOaMMNS5nQ_2_hBlZV7ntLjI3pdcrzQ_0").build()
+    application = Application.builder().token("YOUR_BOT_TOKEN").build()
 
     conversation_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_checkout)],
