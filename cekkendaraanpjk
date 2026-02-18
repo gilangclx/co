@@ -1,0 +1,123 @@
+import logging
+import requests
+import re
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+
+# --- KONFIGURASI ---
+TOKEN = 'fffffffff' # Ganti dengan Token dari @BotFather
+API_URL = "https://sambara-v2.bapenda.jabarprov.go.id/api/renew-sambara/v2/get-info-pkb"
+
+# Setup logging untuk memantau error di terminal
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Respon ketika user mengetik /start"""
+    await update.message.reply_text(
+        "👋 Halo! Saya Bot Cek Pajak Kendaraan Jawa Barat.\n\n"
+        "Silakan masukkan Nomor Polisi.",
+        parse_mode='Markdown'
+    )
+
+def format_nopol_for_api(text):
+    """
+    Mengubah format 'Z 2168 AAJ' menjadi 'Z AAJ2168'
+    Menggunakan Regex untuk memisahkan Kode Wilayah, Angka, dan Seri Belakang.
+    """
+    clean_text = text.upper().replace("-", "").strip()
+    # Pattern: (1-2 Huruf Depan) (1-4 Angka) (1-3 Huruf Belakang)
+    match = re.match(r"([A-Z]{1,2})\s*(\d{1,4})\s*([A-Z]{1,3})", clean_text)
+    
+    if match:
+        wilayah = match.group(1)
+        angka = match.group(2)
+        seri = match.group(3)
+        # Susun ulang sesuai permintaan API Sambara
+        return f"{wilayah} {seri}{angka}"
+    return clean_text
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_input = update.message.text
+    nopol_api = format_nopol_for_api(user_input)
+    
+    # Headers lengkap dari data yang Anda berikan
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Connection": "keep-alive",
+        "Host": "sambara-v2.bapenda.jabarprov.go.id",
+        "Origin": "https://sambara-v2.bapenda.jabarprov.go.id",
+        "Referer": "https://sambara-v2.bapenda.jabarprov.go.id/",
+        "Sec-Ch-Ua": '"Not(A:Bar;v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "authorization": "Basic c2FtYmFyYTp5U2Y0cnozZTlk", # Auth Key Anda
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    }
+
+    params = {
+        "no_polisi": nopol_api,
+        "kd_plat": "1"
+    }
+
+    await update.message.reply_text(f"🔍 Mencari data untuk: `{user_input}`...", parse_mode='Markdown')
+
+    try:
+        response = requests.get(API_URL, params=params, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            res = response.json()
+            if res.get('success'):
+                d = res['data']
+                inf = d['informasi-umum']
+                pjk = d['informasi-pkb-pnbp']
+                byr = d['pembayaran-pkb-pnbp']
+
+                # Menyusun pesan balasan yang rapi
+                msg = (
+                    f"✅ **DATA PAJAK KENDARAAN**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🚘 **Info Kendaraan**\n"
+                    f"• No Polisi: `{inf['nomor-polisi']}`\n"
+                    f"• Merk/Model: {inf['merk']} / {inf['model']}\n"
+                    f"• Tahun/Warna: {inf['tahun-buatan']} / {inf['warna']}\n"
+                    f"• Kepemilikan: {inf['milik-ke']}\n\n"
+                    f"📅 **Masa Berlaku**\n"
+                    f"• Samsat: {pjk['wilayah']}\n"
+                    f"• Pajak: {pjk['tanggal-pajak']}\n"
+                    f"• STNK: {pjk['tanggal-stnk']}\n\n"
+                    f"💰 **Rincian Biaya**\n"
+                    f"• PKB Pokok: Rp {byr['pkb-pokok']:,}\n"
+                    f"• Opsen PKB: Rp {byr['opsen-pkb-pokok']:,}\n"
+                    f"• SWDKLLJ: Rp {byr['swdkllj-pokok']:,}\n"
+                    f"• Denda: Rp {(byr['pkb-denda'] + byr['swdkllj-denda']):,}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👉 **TOTAL: Rp {byr['total']:,}**"
+                )
+                await update.message.reply_text(msg.replace(",", "."), parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"❌ {res.get('message', 'Data tidak ditemukan.')}")
+        else:
+            await update.message.reply_text(f"⚠️ Error Server ({response.status_code}). Coba lagi nanti.")
+
+    except Exception as e:
+        logging.error(f"Error: {str(e)}")
+        await update.message.reply_text("⚠️ Terjadi gangguan koneksi ke server Bapenda.")
+
+if __name__ == '__main__':
+    # Inisialisasi Bot
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Handler
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    print("Bot Sambara Aktif... Tekan Ctrl+C untuk berhenti.")
+    app.run_polling()
